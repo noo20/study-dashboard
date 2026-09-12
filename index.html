@@ -245,7 +245,16 @@ tbody tr.improved .area-name{text-decoration:line-through;text-decoration-color:
 #toast.show{opacity:1;transform:translate(-50%,0);}
 
 footer.note{max-width:1180px;margin:28px auto 0;padding:0 16px;font-size:12px;color:var(--text-muted);}
+
+.ocr-box{margin-top:16px;border:1px dashed var(--accent);background:var(--accent-soft);border-radius:12px;padding:14px;}
+.ocr-box h3{margin:0 0 6px;font-size:15px;}
+.ocr-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;}
+.ocr-preview{max-width:100%;max-height:260px;display:none;margin-top:10px;border-radius:8px;border:1px solid var(--border);background:#fff;}
+.ocr-status{font-size:12px;color:var(--text-muted);margin-top:8px;white-space:pre-wrap;}
+.ocr-text{width:100%;min-height:110px;margin-top:10px;display:none;font-family:monospace;font-size:12px;}
+.ocr-candidates{display:none;margin-top:10px;padding:10px;background:#fff;border-radius:8px;border:1px solid var(--border);font-size:13px;}
 </style>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 </head>
 <body>
 
@@ -395,6 +404,20 @@ footer.note{max-width:1180px;margin:28px auto 0;padding:0 16px;font-size:12px;co
       </form>
     </div>
 
+    <div class="ocr-box">
+      <h3>📷 写真から過去問データを読み取る（試験版）</h3>
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">東進などの結果画面のスクショを選ぶと、OCRで文字を読み取り、候補を入力欄に反映します。保存前に必ず確認してください。</div>
+      <div class="ocr-row">
+        <input type="file" id="ocrImageInput" accept="image/*">
+        <button type="button" class="btn" id="ocrRunBtn" disabled>写真を読み取る</button>
+        <button type="button" class="btn" id="ocrApplyBtn" style="display:none;">候補を入力欄へ反映</button>
+      </div>
+      <img id="ocrPreview" class="ocr-preview" alt="OCR対象画像">
+      <div id="ocrStatus" class="ocr-status"></div>
+      <textarea id="ocrText" class="ocr-text" placeholder="読み取った文字"></textarea>
+      <div id="ocrCandidates" class="ocr-candidates"></div>
+    </div>
+
     <div class="card" style="padding:18px;margin-top:16px;">
       <h3 style="font-size:15px;margin-bottom:10px;" id="examListTitle">登録済みデータ（数学）</h3>
       <div class="table-scroll">
@@ -477,7 +500,7 @@ footer.note{max-width:1180px;margin:28px auto 0;padding:0 16px;font-size:12px;co
         <button class="btn btn-danger" id="resetBtn">全データをリセット</button>
       </div>
       <p class="data-note" id="dataSummary"></p>
-      <p class="data-note">インポートは既存データに追記されます（上書きされません）。全リセットのみ確認ダイアログが表示されます。</p>
+      <p class="data-note">インポート時に「追加」または「置き換え」を選択できます。「置き換え」は現在のデータをバックアップ内容で上書きします。</p>
     </div>
   </section>
 
@@ -1601,17 +1624,37 @@ function importData(file){
   reader.onload = function(){
     try{
       var parsed = JSON.parse(reader.result);
+      if (!parsed || (!Array.isArray(parsed.areas) && !Array.isArray(parsed.exams))) {
+        throw new Error("invalid format");
+      }
       var addedAreas = Array.isArray(parsed.areas) ? parsed.areas.length : 0;
       var addedExams = Array.isArray(parsed.exams) ? parsed.exams.length : 0;
-      pushUndo();
-      if (Array.isArray(parsed.areas)){
-        parsed.areas.forEach(function(a){ state.areas.push(Object.assign({}, a, { id: makeId() })); });
+      var choice = prompt(
+        "インポート方法を選択してください。\n\n「追加」または「置き換え」と入力してください。\n\n追加：現在のデータを残して追加\n置き換え：現在のデータを削除してバックアップで復元",
+        "置き換え"
+      );
+      if (choice === null) return;
+      choice = choice.trim();
+      if (choice !== "追加" && choice !== "置き換え") {
+        alert("「追加」または「置き換え」と正確に入力してください。");
+        return;
       }
-      if (Array.isArray(parsed.exams)){
-        parsed.exams.forEach(function(e){ state.exams.push(normalizeExam(Object.assign({}, e, { id: makeId() }))); });
+      if (choice === "置き換え") {
+        if (!confirm("現在のデータを削除し、バックアップの内容に置き換えます。よろしいですか？")) return;
+        pushUndo();
+        state.areas = Array.isArray(parsed.areas) ? parsed.areas.map(function(a){ return Object.assign({}, a, { id: makeId() }); }) : [];
+        state.exams = Array.isArray(parsed.exams) ? parsed.exams.map(function(e){ return normalizeExam(Object.assign({}, e, { id: makeId() })); }) : [];
+      } else {
+        pushUndo();
+        if (Array.isArray(parsed.areas)) {
+          parsed.areas.forEach(function(a){ state.areas.push(Object.assign({}, a, { id: makeId() })); });
+        }
+        if (Array.isArray(parsed.exams)) {
+          parsed.exams.forEach(function(e){ state.exams.push(normalizeExam(Object.assign({}, e, { id: makeId() }))); });
+        }
       }
       saveState(); renderAll();
-      showToast("インポート完了（分野"+addedAreas+"件・過去問"+addedExams+"件を追加）");
+      showToast("インポート完了（" + choice + "・分野" + addedAreas + "件・過去問" + addedExams + "件）");
     }catch(e){
       alert("JSONファイルの読み込みに失敗しました。ファイル形式を確認してください。");
     }
@@ -1811,6 +1854,81 @@ loadState();
 renderAll();
 
 })();
+
+/* ============================================================
+   写真OCR入力（AI API不要・候補を確認してから反映）
+============================================================ */
+var ocrLastCandidates = {};
+var ocrImageDataUrl = "";
+
+function ocrSetField(id, value){
+  if (value !== null && value !== undefined && String(value).trim() !== "") {
+    document.getElementById(id).value = value;
+  }
+}
+function ocrExtractCandidates(text){
+  var t = text.replace(/\r/g,"\n");
+  var c = {};
+  function first(re){ var m=t.match(re); return m ? m[1].trim() : ""; }
+  var year = first(/(?:年度|年|year)\s*[:：]?\s*(20\d{2})/i) || first(/\b(20\d{2})\b/);
+  var score = first(/(?:得点|得点率|score|your\s*score)\s*[:：]?\s*(\d+(?:\.\d+)?)\s*(?:\/|／|点)?/i);
+  var frac = t.match(/(\d+(?:\.\d+)?)\s*[\/／]\s*(\d+(?:\.\d+)?)/);
+  if (!score && frac) score=frac[1];
+  var max = first(/(?:満点|配点|max(?:imum)?\s*score)\s*[:：]?\s*(\d+(?:\.\d+)?)/i);
+  if (!max && frac) max=frac[2];
+  var dev = first(/(?:偏差値|偏差|deviation|hensachi)\s*[:：]?\s*(\d+(?:\.\d+)?)/i);
+  var avg = first(/(?:平均点|平均|average(?:\s*score)?)\s*[:：]?\s*(\d+(?:\.\d+)?)/i);
+  var qno = first(/(?:大問|問題|question|問)\s*[:：]?\s*(第?\s*[1-9０-９])/i);
+  var univ = t.match(/(東京大学|京都大学|大阪大学|名古屋大学|東北大学|北海道大学|九州大学|一橋大学|東京工業大学)/);
+  c.year=year; c.myScore=score; c.maxScore=max; c.deviation=dev; c.avgScore=avg; c.questionNumber=qno || ""; c.university=univ?univ[1]:"";
+  return c;
+}
+function ocrRenderCandidates(c){
+  var labels={year:"年度",university:"大学名",questionNumber:"大問番号",myScore:"自分の得点",maxScore:"満点",avgScore:"平均点",deviation:"偏差値"};
+  var html='<b>読み取り候補（未入力の項目は空欄のままです）</b><br>';
+  Object.keys(labels).forEach(function(k){ html += labels[k]+"："+(c[k]||"（なし）")+"<br>"; });
+  html += '<span style="color:var(--text-muted);font-size:11px;">※OCRの誤認識があるため、反映後に必ず確認してください。</span>';
+  var box=document.getElementById("ocrCandidates"); box.innerHTML=html; box.style.display="block";
+}
+
+document.getElementById("ocrImageInput").addEventListener("change", function(e){
+  var file=e.target.files && e.target.files[0];
+  if(!file) return;
+  var reader=new FileReader();
+  reader.onload=function(){
+    ocrImageDataUrl=reader.result;
+    var img=document.getElementById("ocrPreview"); img.src=ocrImageDataUrl; img.style.display="block";
+    document.getElementById("ocrRunBtn").disabled=false;
+    document.getElementById("ocrStatus").textContent="画像を選択しました。「写真を読み取る」を押してください。";
+  };
+  reader.readAsDataURL(file);
+});
+
+document.getElementById("ocrRunBtn").addEventListener("click", async function(){
+  if(!ocrImageDataUrl || !window.Tesseract) return;
+  var btn=this; btn.disabled=true; btn.textContent="読み取り中…";
+  document.getElementById("ocrStatus").textContent="OCR処理中です。画像によっては30秒〜数分かかります。";
+  try{
+    var result=await Tesseract.recognize(ocrImageDataUrl,"jpn+eng",{logger:function(m){
+      if(m.status && typeof m.progress==="number") document.getElementById("ocrStatus").textContent=m.status+"（"+Math.round(m.progress*100)+"%）";
+    }});
+    var text=result.data.text||"";
+    document.getElementById("ocrText").value=text; document.getElementById("ocrText").style.display="block";
+    ocrLastCandidates=ocrExtractCandidates(text); ocrRenderCandidates(ocrLastCandidates);
+    document.getElementById("ocrApplyBtn").style.display="inline-flex";
+    document.getElementById("ocrStatus").textContent="読み取り完了。候補を確認してから反映してください。";
+  }catch(err){ document.getElementById("ocrStatus").textContent="読み取りに失敗しました："+err.message; }
+  btn.disabled=false; btn.textContent="写真を読み取る";
+});
+
+document.getElementById("ocrApplyBtn").addEventListener("click", function(){
+  var c=ocrLastCandidates;
+  ocrSetField("exUniv",c.university); ocrSetField("exYear",c.year); ocrSetField("exQNo",c.questionNumber);
+  ocrSetField("exMyScore",c.myScore); ocrSetField("exMaxScore",c.maxScore); ocrSetField("exAvgScore",c.avgScore); ocrSetField("exDeviation",c.deviation);
+  document.getElementById("ocrStatus").textContent="候補を入力欄へ反映しました。分野名などを補い、内容を確認して登録してください。";
+  document.getElementById("sec-examinput").scrollIntoView({behavior:"smooth"});
+});
+
 </script>
 </body>
 </html>
