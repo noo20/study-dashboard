@@ -253,8 +253,17 @@ footer.note{max-width:1180px;margin:28px auto 0;padding:0 16px;font-size:12px;co
 .ocr-status{font-size:12px;color:var(--text-muted);margin-top:8px;white-space:pre-wrap;}
 .ocr-text{width:100%;min-height:110px;margin-top:10px;display:none;font-family:monospace;font-size:12px;}
 .ocr-candidates{display:none;margin-top:10px;padding:10px;background:#fff;border-radius:8px;border:1px solid var(--border);font-size:13px;}
+  .sync-box{margin-top:12px;padding:14px;border:1px solid var(--border);border-radius:12px;background:var(--surface-alt);}
+  .sync-status{font-size:12px;color:var(--text-muted);margin-top:7px;white-space:pre-wrap;}
+  .sync-id{font-family:monospace;font-size:12px;word-break:break-all;background:#fff;padding:7px;border-radius:7px;border:1px solid var(--border);display:none;margin-top:7px;}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script type="module" id="firebase-modules">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+  import { getFirestore, doc, getDoc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+  import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+  window.__firebase = { initializeApp, getFirestore, doc, getDoc, setDoc, onSnapshot, getAuth, signInAnonymously, onAuthStateChanged };
+</script>
 </head>
 <body>
 
@@ -501,6 +510,17 @@ footer.note{max-width:1180px;margin:28px auto 0;padding:0 16px;font-size:12px;co
       </div>
       <p class="data-note" id="dataSummary"></p>
       <p class="data-note">インポート時に「追加」または「置き換え」を選択できます。「置き換え」は現在のデータをバックアップ内容で上書きします。</p>
+      <div class="sync-box">
+        <b style="font-size:14px;">☁ PC・iPhone自動同期</b>
+        <div style="font-size:12px;color:var(--text-muted);margin:4px 0 9px;">同じ同期コードを両端末で使うと、データをクラウド経由で共有できます。</div>
+        <div class="settings-grid">
+          <button class="btn" id="syncSetupBtn">同期を設定</button>
+          <button class="btn" id="syncUploadBtn" disabled>今すぐクラウドへ保存</button>
+          <button class="btn" id="syncDownloadBtn" disabled>クラウドから読み込む</button>
+        </div>
+        <div id="syncStatus" class="sync-status">未設定</div>
+        <div id="syncCode" class="sync-id"></div>
+      </div>
     </div>
   </section>
 
@@ -1929,6 +1949,59 @@ document.getElementById("ocrApplyBtn").addEventListener("click", function(){
   document.getElementById("sec-examinput").scrollIntoView({behavior:"smooth"});
 });
 
+
+<script>
+(function(){
+  const FIREBASE_CONFIG = {
+    apiKey: "AIzaSyC2hW2jcnmQVbtHK2C0CpGpi7n_NQLFRlc",
+    authDomain: "study-dashboard-150f6.firebaseapp.com",
+    projectId: "study-dashboard-150f6",
+    storageBucket: "study-dashboard-150f6.firebasestorage.app",
+    messagingSenderId: "706423757543",
+    appId: "1:706423757543:web:912cb81ce5f5c0c1e7e042"
+  };
+  let syncDb=null, syncAuth=null, syncUser=null, syncUnsub=null, syncCode=null, syncReady=false;
+  const $=id=>document.getElementById(id);
+  function st(t){ if($("syncStatus")) $("syncStatus").textContent=t; }
+  function validConfig(){ return !FIREBASE_CONFIG.apiKey.startsWith("ここに"); }
+  async function initSync(){
+    if(!window.__firebase){st("同期モジュールを読み込み中です。少し待ってください。");return;}
+    if(!validConfig()){st("Firebase設定が未入力です。HTML内のFIREBASE_CONFIGを設定してください。");return;}
+    try{
+      const f=window.__firebase;
+      const app=f.initializeApp(FIREBASE_CONFIG);
+      syncDb=f.getFirestore(app); syncAuth=f.getAuth(app);
+      f.onAuthStateChanged(syncAuth,u=>{syncUser=u; if(u){syncReady=true; $("syncUploadBtn").disabled=false; $("syncDownloadBtn").disabled=false; st("同期準備完了。同期コードを入力/発行してください。");}});
+      await f.signInAnonymously(syncAuth);
+    }catch(e){st("同期初期化エラー: "+e.message);}
+  }
+  async function setup(){
+    if(!syncReady){await initSync(); if(!syncReady)return;}
+    let c=localStorage.getItem("studySyncCode");
+    if(!c){c=prompt("同期コードを決めてください（例：my-study-2026）。PCとiPhoneで同じ文字列を入力します。"); if(!c)return; c=c.trim(); if(!c)return; localStorage.setItem("studySyncCode",c);}
+    syncCode=c; $("syncCode").style.display="block"; $("syncCode").textContent="同期コード："+c;
+    st("同期コードを設定しました。");
+    await download();
+    if(!syncUnsub) syncUnsub=window.__firebase.onSnapshot(window.__firebase.doc(syncDb,"studySync",syncCode), snap=>{if(snap.exists() && snap.data().payload){const d=snap.data().payload; if(confirm("クラウド側でデータが更新されました。読み込みますか？")){state.areas=d.areas||[];state.exams=(d.exams||[]).map(normalizeExam);saveState();renderAll();showToast("クラウドから同期しました");}}});
+  }
+  async function upload(){
+    if(!syncReady||!syncCode){st("先に「同期を設定」を押してください。");return;}
+    try{await window.__firebase.setDoc(window.__firebase.doc(syncDb,"studySync",syncCode),{payload:{areas:state.areas,exams:state.exams},updatedAt:Date.now()});st("クラウドへ保存しました。");showToast("クラウド同期しました");}
+    catch(e){st("保存失敗: "+e.message);}
+  }
+  async function download(){
+    if(!syncReady||!syncCode){st("先に同期コードを設定してください。");return;}
+    try{const snap=await window.__firebase.getDoc(window.__firebase.doc(syncDb,"studySync",syncCode)); if(snap.exists()&&snap.data().payload){if(confirm("現在の端末データをクラウドデータで置き換えますか？")){const d=snap.data().payload;pushUndo();state.areas=d.areas||[];state.exams=(d.exams||[]).map(normalizeExam);saveState();renderAll();showToast("クラウドから読み込みました");}}else st("クラウドにまだデータがありません。");}
+    catch(e){st("読み込み失敗: "+e.message);}
+  }
+  window.addEventListener("load",()=>{
+    $("syncSetupBtn")?.addEventListener("click",setup);
+    $("syncUploadBtn")?.addEventListener("click",upload);
+    $("syncDownloadBtn")?.addEventListener("click",download);
+    const c=localStorage.getItem("studySyncCode"); if(c){syncCode=c;$("syncCode").style.display="block";$("syncCode").textContent="同期コード："+c;}
+  });
+})();
+</script>
 </script>
 </body>
 </html>
