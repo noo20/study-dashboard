@@ -394,7 +394,7 @@ footer.note{max-width:1180px;margin:28px auto 0;padding:0 16px;font-size:12px;co
 
     <div class="ocr-box">
       <h3>📷 写真から過去問データを読み取る（試験版）</h3>
-      <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">東進などの結果画面のスクショを選ぶと、OCRで文字を読み取り、候補を入力欄に反映します。保存前に必ず確認してください。</div>
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">東進「復習の指針」の画像（1ページ全体）を選んでください。固定レイアウトに合わせて領域ごとに読み取り、年度・科目・大問・得点・偏差値・得点分布・加点要素を候補として表示します。保存前に必ず確認してください。</div>
       <div class="ocr-row">
         <input type="file" id="ocrImageInput" accept="image/*">
         <button type="button" class="btn" id="ocrRunBtn" disabled>写真を読み取る</button>
@@ -1762,6 +1762,7 @@ document.getElementById("examForm").addEventListener("submit", function(e){
   var distParsed = parseDistributionText(document.getElementById("exDistText").value);
   data.scoreDistribution = distParsed.items;
 
+  if (window.studyPendingImport && window.studyPendingImport.rubricItems.length) data.rubricItems = window.studyPendingImport.rubricItems;
   var errors = validateExam(data);
   var errBox = document.getElementById("examErrors");
   if (errors.length>0){
@@ -1778,9 +1779,11 @@ document.getElementById("examForm").addEventListener("submit", function(e){
   if (distNotices.length>0) showToast("得点分布の警告："+distNotices.join(" / "));
   if (editingExamId){
     updateExam(editingExamId, data);
+    window.studyPendingImport = null;
     cancelEditExam();
   }else{
     addExam(data);
+    window.studyPendingImport = null;
     document.getElementById("examForm").reset();
     document.getElementById("exSubject").value = state.activeSubject;
     updateQuestionChoices();
@@ -1882,76 +1885,241 @@ window.studySyncBridge = {
 })();
 
 /* ============================================================
-   写真OCR入力（AI API不要・候補を確認してから反映）
+   写真OCR入力（東進「復習の指針」固定フォーマット専用）
+   全体を一括OCRせず、領域ごとに切り出して二値化 → 用途別に読み取る。
+   ・このシートでは「1」が「/」の字形で印字される → 数字欄では「/」を1に変換
+   ・棒グラフは棒の高さを直接測って、OCR値の検算・補完に使う
+   ・配点合計＝満点、分布合計≒100% などで整合チェック
 ============================================================ */
-var ocrLastCandidates = {};
-var ocrImageDataUrl = "";
+var OCR_REF = {W:1106, H:1575};              // 基準座標（画像サイズに合わせて自動スケール）
+var OCR_L = {
+  title:[295,95,830,135], score:[236,228,450,270], dev:[236,281,450,322],
+  hist:{base:308, per10:48, x0:571, dx:34, bins:11},
+  tbl:{y0:465.8, rowH:27.4, maxRows:16, cols:[62,182,702,781,914]}
+};
+var OCR_TERMS = ["運動方程式","静止摩擦力","動摩擦力","等加速度直線運動","等速直線運動","力のつり合い","弾性力","フックの法則","重心速度","重心運動","運動量の保存","運動量保存則","角振動数","周期","振動数","相対速度","相対運動","単振動","振幅","エネルギー保存則","力学的エネルギー保存則","仕事とエネルギー","円運動","向心力","慣性力","万有引力","斜方投射","自由落下","反発係数","電場","電位","ガウスの法則","コンデンサー","オームの法則","キルヒホッフの法則","電磁誘導","ローレンツ力","磁場","ファラデーの法則","レンツの法則","自己誘導","交流回路","荷電粒子","ドップラー効果","干渉","回折","屈折","定常波","ヤングの実験","薄膜干渉","回折格子","状態方程式","熱力学第一法則","断熱変化","等温変化","定積変化","定圧変化","比熱","熱効率","内部エネルギー","浮力","確率","微分","積分","漸化式"];
+var OCR_AREAS = {
+  "力学":"運動|摩擦|つり合い|弾性|フック|重心|運動量|振動|振幅|周期|エネルギー|仕事|円運動|慣性|万有引力|投射|落下|衝突|反発|浮力|相対",
+  "電磁気":"電場|電位|ガウス|コンデンサ|オーム|キルヒホッフ|誘導|ローレンツ|磁場|ファラデー|レンツ|交流|荷電|電流|抵抗",
+  "波動":"ドップラー|干渉|回折|屈折|反射|定常波|ヤング|薄膜|光",
+  "熱力学":"状態方程式|熱|断熱|等温|定積|定圧|比熱|内部エネルギー|気体"
+};
+var ocrImg = null, ocrLast = null;
 
-function ocrSetField(id, value){
-  if (value !== null && value !== undefined && String(value).trim() !== "") {
-    document.getElementById(id).value = value;
+function ocrHalf(s){ return s.replace(/[０-９]/g,function(c){return String.fromCharCode(c.charCodeAt(0)-65248);}); }
+function ocrDigits(s){ return ocrHalf(s).replace(/[\/lI|丨!]/g,"1").replace(/[Oo〇]/g,"0"); }
+function ocrLev(a,b){
+  var p=[],i,j; for(j=0;j<=b.length;j++) p[j]=j;
+  for(i=1;i<=a.length;i++){ var q=[i]; for(j=1;j<=b.length;j++) q[j]=Math.min(p[j]+1,q[j-1]+1,p[j-1]+(a[i-1]===b[j-1]?0:1)); p=q; }
+  return p[b.length];
+}
+// 「・」「、」区切りで用語辞書に近いものだけ補正（1〜25%程度の誤字を吸収）
+function ocrSnap(text){
+  return text.split(/([・、,，])/).map(function(seg){
+    if (seg.length<3 || /^[・、,，]$/.test(seg)) return seg;
+    var best=seg, bd=99;
+    OCR_TERMS.forEach(function(t){ var d=ocrLev(seg,t); if(d<bd){bd=d;best=t;} });
+    return bd<=Math.max(1,Math.floor(seg.length*0.25)) ? best : seg;
+  }).join("");
+}
+function ocrOtsu(h,total){
+  var sum=0,i; for(i=0;i<256;i++) sum+=i*h[i];
+  var sB=0,wB=0,max=0,t=127;
+  for(i=0;i<256;i++){ wB+=h[i]; if(!wB) continue; var wF=total-wB; if(!wF) break; sB+=i*h[i];
+    var mB=sB/wB, mF=(sum-sB)/wF, v=wB*wF*(mB-mF)*(mB-mF); if(v>max){max=v;t=i;} }
+  return t;
+}
+// 全体を作業用キャンバス（幅=基準の2.5倍）に描画
+function ocrPrepare(img){
+  var S=2.5, w=Math.round(OCR_REF.W*S), h=Math.round(w*img.naturalHeight/img.naturalWidth);
+  var c=document.createElement("canvas"); c.width=w; c.height=h;
+  var x=c.getContext("2d",{willReadFrequently:true});
+  x.imageSmoothingQuality="high"; x.fillStyle="#fff"; x.fillRect(0,0,w,h); x.drawImage(img,0,0,w,h);
+  return {c:c, x:x, sx:w/OCR_REF.W, sy:h/OCR_REF.H};
+}
+// 領域を切り出し→拡大→濃淡化（min(R,G,B)で赤文字も濃く）→大津の二値化
+function ocrCrop(P,r,th){
+  var sx0=Math.round(r[0]*P.sx), sy0=Math.round(r[1]*P.sy);
+  var sw=Math.max(1,Math.round((r[2]-r[0])*P.sx)), sh=Math.max(1,Math.round((r[3]-r[1])*P.sy));
+  var k=th/sh, pad=12, o=document.createElement("canvas");
+  o.width=Math.round(sw*k)+pad*2; o.height=Math.round(sh*k)+pad*2;
+  var ox=o.getContext("2d",{willReadFrequently:true});
+  ox.fillStyle="#fff"; ox.fillRect(0,0,o.width,o.height); ox.imageSmoothingQuality="high";
+  ox.drawImage(P.c,sx0,sy0,sw,sh,pad,pad,sw*k,sh*k);
+  var id=ox.getImageData(0,0,o.width,o.height), d=id.data, hist=new Array(256).fill(0), i, g, black=0;
+  for(i=0;i<d.length;i+=4){ g=Math.min(d[i],d[i+1],d[i+2]); d[i]=g; hist[g]++; }
+  var t=ocrOtsu(hist,d.length/4);
+  for(i=0;i<d.length;i+=4){ g=d[i]>t?255:0; if(!g) black++; d[i]=d[i+1]=d[i+2]=g; d[i+3]=255; }
+  ox.putImageData(id,0,0);
+  o.ink=black/(d.length/4);
+  return o;
+}
+async function ocrRead(w,cv,psm,wl){
+  await w.setParameters({tessedit_pageseg_mode:psm, tessedit_char_whitelist:wl||""});
+  var r=await w.recognize(cv);
+  return {text:(r.data.text||"").replace(/\s+/g,""), conf:r.data.confidence||0};
+}
+// 棒グラフの高さを直接測る（灰色 or 赤の棒色を下から上へ辿る）
+function ocrBars(P){
+  var L=OCR_L.hist, x=P.x, res=[], base=L.base*P.sy, hw=Math.max(2,Math.round(3*P.sx));
+  function isBar(d,o){ var r=d[o],g=d[o+1],b=d[o+2];
+    return (r<175&&g<175&&b<175&&Math.abs(r-g)<30&&Math.abs(g-b)<30)||(r>170&&g<120&&b<120); }
+  for(var i=0;i<L.bins;i++){
+    var cx=Math.round((L.x0+L.dx*i)*P.sx), y=Math.round(base-2*P.sy), lim=Math.round(base-3.6*L.per10*P.sy);
+    var ok=function(yy){ var d=x.getImageData(cx-hw,yy,hw*2+1,1).data, n=0; for(var k=0;k<d.length;k+=4) if(isBar(d,k)) n++; return n>=hw*2; };
+    if(!ok(y)){ res.push({pct:0,red:false,top:L.base}); continue; }
+    var p=x.getImageData(cx,y,1,1).data, red=p[0]>170&&p[1]<120;
+    while(y>lim && ok(y-1)) y--;
+    res.push({pct:Math.round((base-y)/(L.per10*P.sy)*100)/10, red:red, top:y/P.sy});
   }
+  return res;
 }
-function ocrExtractCandidates(text){
-  var t = text.replace(/\r/g,"\n");
-  var c = {};
-  function first(re){ var m=t.match(re); return m ? m[1].trim() : ""; }
-  var year = first(/(?:年度|年|year)\s*[:：]?\s*(20\d{2})/i) || first(/\b(20\d{2})\b/);
-  var score = first(/(?:得点|得点率|score|your\s*score)\s*[:：]?\s*(\d+(?:\.\d+)?)\s*(?:\/|／|点)?/i);
-  var frac = t.match(/(\d+(?:\.\d+)?)\s*[\/／]\s*(\d+(?:\.\d+)?)/);
-  if (!score && frac) score=frac[1];
-  var max = first(/(?:満点|配点|max(?:imum)?\s*score)\s*[:：]?\s*(\d+(?:\.\d+)?)/i);
-  if (!max && frac) max=frac[2];
-  var dev = first(/(?:偏差値|偏差|deviation|hensachi)\s*[:：]?\s*(\d+(?:\.\d+)?)/i);
-  var avg = first(/(?:平均点|平均|average(?:\s*score)?)\s*[:：]?\s*(\d+(?:\.\d+)?)/i);
-  var qno = first(/(?:大問|問題|question|問)\s*[:：]?\s*(第?\s*[1-9０-９])/i);
-  var univ = t.match(/(東京大学|京都大学|大阪大学|名古屋大学|東北大学|北海道大学|九州大学|一橋大学|東京工業大学)/);
-  c.year=year; c.myScore=score; c.maxScore=max; c.deviation=dev; c.avgScore=avg; c.questionNumber=qno || ""; c.university=univ?univ[1]:"";
-  return c;
+function ocrPct(s){
+  s=s.replace(/[,，]/g,".");
+  var m=s.match(/^(\d{1,2})\.(\d)$/); if(m) return parseFloat(m[1]+"."+m[2]);
+  m=s.match(/^(\d{2,3})$/); return m ? parseInt(m[1],10)/10 : null;
 }
-function ocrRenderCandidates(c){
-  var labels={year:"年度",university:"大学名",questionNumber:"大問番号",myScore:"自分の得点",maxScore:"満点",avgScore:"平均点",deviation:"偏差値"};
-  var html='<b>読み取り候補（未入力の項目は空欄のままです）</b><br>';
-  Object.keys(labels).forEach(function(k){ html += labels[k]+"："+(c[k]||"（なし）")+"<br>"; });
-  html += '<span style="color:var(--text-muted);font-size:11px;">※OCRの誤認識があるため、反映後に必ず確認してください。</span>';
-  var box=document.getElementById("ocrCandidates"); box.innerHTML=html; box.style.display="block";
+function ocrPart(s,prev){
+  s=ocrHalf(s).replace(/（/g,"(").replace(/）/g,")");
+  var m=s.match(/^([^(]*)\(([^)]*)\)?/);
+  var roman=m ? m[1].replace(/[l1|\/\\]/g,"I").replace(/[^IVX]/g,"") : "";
+  var n=m ? ocrDigits(m[2]).replace(/\D/g,"") : "";
+  return (roman||prev||"")+"("+(n||"?")+")";
+}
+function ocrGuessArea(rows){
+  var j=rows.map(function(r){return r.content;}).join(""), best="", bc=0;
+  Object.keys(OCR_AREAS).forEach(function(k){ var m=j.match(new RegExp(OCR_AREAS[k],"g")), n=m?m.length:0; if(n>bc){bc=n;best=k;} });
+  return best;
+}
+function ocrSetField(id,v){ if(v!==null&&v!==undefined&&String(v).trim()!==""){ var el=document.getElementById(id); el.value=v; } }
+function ocrEsc(s){ return String(s==null?"":s).replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];}); }
+
+async function ocrAnalyze(P,we,wj,step){
+  var L=OCR_L, R={notes:[],dist:[],rows:[]}, raw=[];
+  // 1) タイトル：大学・年度・科目・大問番号
+  step("タイトルを読み取り中…");
+  var t=await ocrRead(wj,ocrCrop(P,L.title,100),"7","");
+  raw.push("title: "+t.text);
+  var tx=ocrHalf(t.text);
+  var u=tx.match(/(東京大学|京都大学|大阪大学|名古屋大学|東北大学|北海道大学|九州大学|一橋大学|東京工業大学)/); R.univ=u?u[1]:"";
+  var y=tx.match(/(2[0O][0-9\/lI|][0-9\/lI|])\s*年/); R.year=y?ocrDigits(y[1]):"";
+  var q=tx.match(/第\s*([0-9\/lI|]+)\s*問/); R.q=q?ocrDigits(q[1]):"";
+  R.subject=/数/.test(tx)?"数学":/物/.test(tx)?"物理":/化/.test(tx)?"化学":/英/.test(tx)?"英語":"";
+  // 2) 得点・偏差値
+  step("得点・偏差値を読み取り中…");
+  var s=await ocrRead(we,ocrCrop(P,L.score,90),"7","0123456789/");
+  raw.push("score: "+s.text);
+  var sm=s.text.match(/^(\d{1,3})\/(\d{1,3})$/);
+  if(sm && +sm[1]<=+sm[2]){ R.myScore=+sm[1]; R.maxScore=+sm[2]; }
+  var d=await ocrRead(we,ocrCrop(P,L.dev,90),"7","0123456789.");
+  raw.push("dev: "+d.text);
+  var dv=d.text.match(/^(\d{2})\.(\d)$/) ? parseFloat(d.text) : (/^\d{3}$/.test(d.text) ? parseInt(d.text,10)/10 : null);
+  R.dev=(dv!==null && dv>=20 && dv<=90) ? dv : "";
+  // 3) 得点分布：棒の高さ計測＋ラベルOCR
+  step("得点分布を読み取り中…");
+  var bars=ocrBars(P), H=L.hist, sum=0;
+  R.redBin=-1;
+  for(var i=0;i<H.bins;i++){
+    var cx=H.x0+H.dx*i, b=bars[i], lab=await ocrRead(we,ocrCrop(P,[cx-16,b.top-15,cx+16,b.top-1],60),"7","0123456789.");
+    var v=ocrPct(lab.text), est=false, pct;
+    if(v!==null && Math.abs(v-b.pct)<=1.0) pct=v; else { pct=b.pct; est=true; }
+    if(b.red) R.redBin=i;
+    R.dist.push({score:i*2,pct:pct,est:est}); sum+=pct;
+  }
+  raw.push("dist: "+R.dist.map(function(x){return x.score+":"+x.pct+(x.est?"*":"");}).join(" "));
+  R.distSum=Math.round(sum*10)/10;
+  // 4) 加点要素の表（行ごとにセルを切り出して読む）
+  var T=L.tbl;
+  for(var r=0;r<T.maxRows;r++){
+    step("加点要素を読み取り中…（"+(r+1)+"行目）");
+    var y1=T.y0+T.rowH*r+3.5, y2=T.y0+T.rowH*(r+1)-3.5;
+    var cc=ocrCrop(P,[T.cols[1]+4,y1,T.cols[2]-4,y2],64);
+    if(cc.ink<0.006) break;
+    var c=await ocrRead(wj,cc,"7","");
+    if(!c.text || /以下|空欄/.test(c.text)) break;
+    var pt=await ocrRead(we,ocrCrop(P,[T.cols[0]+4,y1,T.cols[1]-4,y2],64),"7","IVX()/0123456789");
+    var rk=await ocrRead(we,ocrCrop(P,[T.cols[2]+4,y1,T.cols[3]-4,y2],64),"8","ABCD");
+    var po=await ocrRead(we,ocrCrop(P,[T.cols[3]+4,y1,T.cols[4]-4,y2],64),"7","0123456789/");
+    var prev=R.rows.length?R.rows[R.rows.length-1].part.split("(")[0]:"";
+    var pts=parseInt(ocrDigits(po.text).replace(/\D/g,""),10);
+    var rank=(rk.text.match(/[ABCD]/)||[""])[0];
+    var content=ocrSnap(c.text);
+    R.rows.push({part:ocrPart(pt.text,prev), content:content, rank:rank, points:isNaN(pts)?null:pts,
+      low:(!rank||isNaN(pts)||Math.min(c.conf,rk.conf)<55)});
+    raw.push("row"+(r+1)+": "+pt.text+" | "+c.text+" | "+rk.text+" | "+po.text);
+  }
+  // 5) 整合チェック
+  var sp=R.rows.reduce(function(a,x){return a+(x.points||0);},0);
+  if(R.rows.length && R.maxScore && sp!==R.maxScore) R.notes.push("配点合計が"+sp+"点で、満点"+R.maxScore+"点と一致しません（読み取り誤り、または配点が省略された行がある可能性）。");
+  if(Math.abs(R.distSum-100)>1.0) R.notes.push("得点分布の合計が"+R.distSum+"%です（100%から外れています）。");
+  if(R.myScore!=null && R.redBin>=0 && R.redBin!==Math.min(Math.floor(R.myScore/2),10)) R.notes.push("分布グラフの赤い棒の位置と得点が一致しません。得点の読み取りを確認してください。");
+  if(R.dist.some(function(x){return x.est;})) R.notes.push("分布のうち * 印は、数字ラベルが読めず棒の高さから推定した値です。");
+  R.raw=raw.join("\n");
+  return R;
 }
 
-document.getElementById("ocrImageInput").addEventListener("change", function(e){
-  var file=e.target.files && e.target.files[0];
-  if(!file) return;
-  var reader=new FileReader();
-  reader.onload=function(){
-    ocrImageDataUrl=reader.result;
-    var img=document.getElementById("ocrPreview"); img.src=ocrImageDataUrl; img.style.display="block";
-    document.getElementById("ocrRunBtn").disabled=false;
-    document.getElementById("ocrStatus").textContent="画像を選択しました。「写真を読み取る」を押してください。";
+function ocrRender(R){
+  function f(l,v){ return l+"："+((v!==""&&v!=null)?"<b>"+ocrEsc(v)+"</b>":"<span style='color:var(--danger)'>（読み取れず）</span>"); }
+  var h="<b>読み取り結果（必ず確認してください）</b><br>"+[f("大学",R.univ),f("年度",R.year),f("科目",R.subject),f("大問",R.q?"第"+R.q+"問":""),
+    f("得点",R.myScore!=null?R.myScore+" / "+R.maxScore:""),f("偏差値",R.dev)].join(" ／ ")+"<br>";
+  h+="得点分布："+R.dist.map(function(x){return x.score+"点台 "+x.pct+"%"+(x.est?"*":"");}).join("、")+"<br>";
+  if(R.rows.length){
+    h+="<table style='min-width:0;width:100%;margin-top:8px;font-size:12px;'><thead><tr><th>設問</th><th>加点要素</th><th>ランク</th><th>配点</th></tr></thead><tbody>"+
+      R.rows.map(function(x){ return "<tr"+(x.low?" style='background:var(--warning-bg);'":"")+"><td>"+ocrEsc(x.part)+"</td><td>"+ocrEsc(x.content)+"</td><td>"+(x.rank||"?")+"</td><td>"+(x.points==null?"?":x.points)+"</td></tr>"; }).join("")+"</tbody></table>"+
+      "<label style='display:block;margin-top:8px;font-size:12px;'><input type='checkbox' id='ocrRubricChk' checked> 加点要素（"+R.rows.length+"件）も一緒に登録する（取れた／取れなかったは画像から判別できないため全て「未取得」で登録します。登録後に取れた項目へチェックを付けてください）</label>";
+  }
+  if(R.notes.length) h+="<div style='margin-top:8px;color:var(--warning);font-size:12px;'>⚠ "+R.notes.map(ocrEsc).join("<br>⚠ ")+"</div>";
+  h+="<div style='color:var(--text-muted);font-size:11px;margin-top:6px;'>黄色の行は信頼度が低い行です。</div>";
+  var box=document.getElementById("ocrCandidates"); box.innerHTML=h; box.style.display="block";
+}
+
+document.getElementById("ocrImageInput").addEventListener("change",function(e){
+  var file=e.target.files&&e.target.files[0]; if(!file) return;
+  var url=URL.createObjectURL(file), img=document.getElementById("ocrPreview");
+  img.onload=function(){
+    ocrImg=img; document.getElementById("ocrRunBtn").disabled=false;
+    var ratio=img.naturalWidth/img.naturalHeight, ref=OCR_REF.W/OCR_REF.H;
+    document.getElementById("ocrStatus").textContent = Math.abs(ratio-ref)>0.04
+      ? "⚠ 画像の縦横比が「復習の指針」1ページ分と異なります。ページ全体がちょうど写るようにトリミングしてから読み取ってください。"
+      : "画像を選択しました。「写真を読み取る」を押してください。";
   };
-  reader.readAsDataURL(file);
+  img.src=url; img.style.display="block";
 });
 
-document.getElementById("ocrRunBtn").addEventListener("click", async function(){
-  if(!ocrImageDataUrl || !window.Tesseract) return;
-  var btn=this; btn.disabled=true; btn.textContent="読み取り中…";
-  document.getElementById("ocrStatus").textContent="OCR処理中です。画像によっては30秒〜数分かかります。";
+document.getElementById("ocrRunBtn").addEventListener("click",async function(){
+  if(!ocrImg||!window.Tesseract) return;
+  var btn=this, st=document.getElementById("ocrStatus"), we=null, wj=null;
+  btn.disabled=true; btn.textContent="読み取り中…";
+  function step(m){ st.textContent=m; }
   try{
-    var result=await Tesseract.recognize(ocrImageDataUrl,"jpn+eng",{logger:function(m){
-      if(m.status && typeof m.progress==="number") document.getElementById("ocrStatus").textContent=m.status+"（"+Math.round(m.progress*100)+"%）";
-    }});
-    var text=result.data.text||"";
-    document.getElementById("ocrText").value=text; document.getElementById("ocrText").style.display="block";
-    ocrLastCandidates=ocrExtractCandidates(text); ocrRenderCandidates(ocrLastCandidates);
+    step("OCRエンジンを準備中…（初回は日本語データの取得に時間がかかります）");
+    we=await Tesseract.createWorker("eng"); wj=await Tesseract.createWorker("jpn");
+    var R=await ocrAnalyze(ocrPrepare(ocrImg),we,wj,step);
+    ocrLast=R;
+    var ta=document.getElementById("ocrText"); ta.value=R.raw; ta.style.display="block";
+    ocrRender(R);
     document.getElementById("ocrApplyBtn").style.display="inline-flex";
-    document.getElementById("ocrStatus").textContent="読み取り完了。候補を確認してから反映してください。";
-  }catch(err){ document.getElementById("ocrStatus").textContent="読み取りに失敗しました："+err.message; }
+    st.textContent="読み取り完了。内容を確認してから反映してください。";
+  }catch(err){ st.textContent="読み取りに失敗しました："+(err&&err.message?err.message:err); }
+  try{ if(we) await we.terminate(); if(wj) await wj.terminate(); }catch(e){}
   btn.disabled=false; btn.textContent="写真を読み取る";
 });
 
-document.getElementById("ocrApplyBtn").addEventListener("click", function(){
-  var c=ocrLastCandidates;
-  ocrSetField("exYear",c.year); ocrSetField("exQNo",c.questionNumber);
-  ocrSetField("exMyScore",c.myScore); ocrSetField("exMaxScore",c.maxScore); ocrSetField("exAvgScore",c.avgScore); ocrSetField("exDeviation",c.deviation);
-  document.getElementById("ocrStatus").textContent="候補を入力欄へ反映しました。分野名などを補い、内容を確認して登録してください。";
+document.getElementById("ocrApplyBtn").addEventListener("click",function(){
+  var R=ocrLast; if(!R) return;
+  if(R.subject){ ocrSetField("exSubject",R.subject); document.getElementById("exSubject").dispatchEvent(new Event("change")); }
+  ocrSetField("exYear",R.year); ocrSetField("exQNo",R.q);
+  ocrSetField("exMyScore",R.myScore); ocrSetField("exMaxScore",R.maxScore); ocrSetField("exDeviation",R.dev);
+  if(R.dist.length){ ocrSetField("exDistText",R.dist.map(function(x){return x.score+":"+x.pct;}).join("\n")); document.getElementById("exDistText").dispatchEvent(new Event("input")); }
+  ocrSetField("exMemo","東進 復習の指針");
+  var area=(R.subject==="物理")?ocrGuessArea(R.rows):"";
+  if(area) ocrSetField("exArea",area);
+  var chk=document.getElementById("ocrRubricChk");
+  window.studyPendingImport = (chk&&chk.checked&&R.rows.length) ? {rubricItems:R.rows.map(function(x){
+    return {id:(window.crypto&&crypto.randomUUID)?crypto.randomUUID():("id-"+Date.now()+Math.random().toString(16).slice(2)),
+      questionPart:x.part, content:x.content, rank:x.rank||"B", points:x.points||0, achieved:false, comment:""};
+  })} : null;
+  document.getElementById("ocrStatus").textContent="入力欄へ反映しました。"+(area?"分野「"+area+"」は加点要素からの推定です。":"分野名を入力し、")+"内容を確認して「この大問を登録」を押してください。";
   document.getElementById("sec-examinput").scrollIntoView({behavior:"smooth"});
 });
 
