@@ -363,13 +363,12 @@ footer.note{max-width:1180px;margin:28px auto 0;padding:0 16px;font-size:12px;co
     </div>
     <div class="card" style="padding:18px;">
       <form id="examForm" class="form-grid">
-        <div class="field"><label>大学名 <span style="color:var(--danger);">*</span></label><input id="exUniv" type="text" placeholder="例：東京大学" required maxlength="40"></div>
-        <div class="field"><label>学部・類</label><input id="exFaculty" type="text" placeholder="例：理科一類" maxlength="40"></div>
-        <div class="field"><label>年度 <span style="color:var(--danger);">*</span></label><input id="exYear" type="number" placeholder="例：2025" min="1980" max="2100" required></div>
+        <div class="field"><label>大学・学部</label><div style="padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface-alt);font-weight:700;">東京大学・理科一類</div></div>
+        <div class="field"><label>年度 <span style="color:var(--danger);">*</span></label><select id="exYear" required aria-label="年度"></select></div>
         <div class="field"><label>科目 <span style="color:var(--danger);">*</span></label>
           <select id="exSubject"><option>数学</option><option>物理</option><option>化学</option><option>英語</option></select>
         </div>
-        <div class="field"><label>大問番号 <span style="color:var(--danger);">*</span></label><input id="exQNo" type="text" placeholder="例：第1問" required maxlength="20"></div>
+        <div class="field"><label>大問番号 <span style="color:var(--danger);">*</span></label><select id="exQNo" required aria-label="大問番号"></select></div>
         <div class="field span2"><label>分野名（主分野） <span style="color:var(--danger);">*</span></label>
           <input id="exArea" type="text" list="areaDatalist" placeholder="例：確率" required maxlength="30">
           <datalist id="areaDatalist"></datalist>
@@ -377,17 +376,6 @@ footer.note{max-width:1180px;margin:28px auto 0;padding:0 16px;font-size:12px;co
         <div class="field"><label>自分の得点 <span style="color:var(--danger);">*</span></label><input id="exMyScore" type="number" min="0" step="0.5" required></div>
         <div class="field"><label>大問の満点 <span style="color:var(--danger);">*</span></label><input id="exMaxScore" type="number" min="0.5" step="0.5" required></div>
         <div class="field"><label>その大問の全体平均点（任意）</label><input id="exAvgScore" type="number" min="0" step="0.5" placeholder="未入力可"></div>
-        <div class="field"><label>平均点の母集団（任意）</label><input id="exPopulation" type="text" placeholder="例：全国模試受験者" maxlength="40"></div>
-        <div class="field"><label>平均点のデータ種別（任意）</label>
-          <select id="exAvgType">
-            <option value="">未選択</option>
-            <option value="大学公式平均">大学公式平均</option>
-            <option value="予備校公表平均">予備校公表平均</option>
-            <option value="得点分布から算出した推定平均">得点分布から算出した推定平均</option>
-            <option value="合格者平均">合格者平均</option>
-            <option value="その他">その他</option>
-          </select>
-        </div>
         <div class="field"><label>偏差値（任意・平均点とは別物です）</label><input id="exDeviation" type="number" min="0" max="100" step="0.1" placeholder="例：62.4"></div>
         <div class="field span2" style="grid-column:1/-1;">
           <label>得点分布（任意・1行に「得点:割合(%)」の形式）</label>
@@ -423,7 +411,7 @@ footer.note{max-width:1180px;margin:28px auto 0;padding:0 16px;font-size:12px;co
       <div class="table-scroll">
         <table>
           <thead><tr>
-            <th>年度</th><th>大学・学部</th><th>大問</th><th>分野</th><th>得点/満点</th><th>得点率</th><th>平均点</th><th>種別</th><th>偏差値</th><th>母集団</th><th>メモ</th><th></th>
+            <th>年度</th><th>大学・学部</th><th>大問</th><th>分野</th><th>得点/満点</th><th>得点率</th><th>平均点</th><th>偏差値</th><th>メモ</th><th></th>
           </tr></thead>
           <tbody id="examBody"></tbody>
         </table>
@@ -1005,9 +993,9 @@ function updateAreaMemo(id, memo){
 function validateExam(data){
   var errors = [];
   if (!data.university) errors.push("大学名を入力してください。");
-  if (!data.year || isNaN(data.year) || data.year<1980 || data.year>2100) errors.push("年度を正しく入力してください（1980〜2100）。");
+  if (!data.year || isNaN(data.year) || data.year<1950 || data.year>2026) errors.push("年度を選択してください（1950〜2026年）。");
   if (!data.subject) errors.push("科目を選択してください。");
-  if (!data.questionNumber) errors.push("大問番号を入力してください。");
+  if (!data.questionNumber) errors.push("大問番号を選択してください。");
   if (!data.areaName) errors.push("分野名を入力してください。");
   if (data.myScore==null || isNaN(data.myScore) || data.myScore<0) errors.push("自分の得点を正しく入力してください。");
   if (data.maxScore==null || isNaN(data.maxScore) || data.maxScore<=0) errors.push("大問の満点を正しく入力してください（0より大きい値）。");
@@ -1046,6 +1034,24 @@ function deleteExam(id){
 /* ============================================================
    9. 描画：ヘッダー／タブ
 ============================================================ */
+function setupExamChoices(){
+  var year = document.getElementById("exYear");
+  year.innerHTML = "";
+  for (var y=2026; y>=1950; y--) {
+    var option = document.createElement("option");
+    option.value = String(y); option.textContent = y + "年";
+    year.appendChild(option);
+  }
+  updateQuestionChoices();
+}
+function updateQuestionChoices(preferred){
+  var subject = document.getElementById("exSubject").value;
+  var choices = subject === "数学" ? ["1","2","3","4","5","6"] :
+    subject === "英語" ? ["1a","1b","2a","2b","3","4a","4b","5"] : ["1","2","3"];
+  var question = document.getElementById("exQNo");
+  question.innerHTML = choices.map(function(value){ return '<option value="'+value+'">'+value+'</option>'; }).join("");
+  if (preferred && choices.indexOf(String(preferred)) >= 0) question.value = String(preferred);
+}
 function renderTabs(){
   var html = SUBJECTS.map(function(s){
     var unresolved = mistakeRanking(s,true).length;
@@ -1057,6 +1063,7 @@ function renderTabs(){
   document.getElementById("mgmtTitle").textContent = state.activeSubject + "の分野管理";
   document.getElementById("examListTitle").textContent = "登録済みデータ（"+state.activeSubject+"）";
   document.getElementById("exSubject").value = state.activeSubject;
+  updateQuestionChoices();
 }
 
 /* ============================================================
@@ -1183,9 +1190,7 @@ function renderExamList(){
       '<td>'+e.myScore+' / '+e.maxScore+'</td>'+
       '<td><span class="score-pill '+riskClassOf(100-rate)+'">'+rate+'%</span></td>'+
       '<td>'+(e.avgScore!==null && e.avgScore!=="" ? e.avgScore : "―")+(distInfo?('<br><span style="font-size:10.5px;color:var(--accent);">分布推定 '+round1(distInfo.estimatedAvg)+'点</span>'):'')+'</td>'+
-      '<td style="font-size:11px;color:var(--text-muted);">'+escapeHtml(e.avgPopulationType||"―")+'</td>'+
       '<td>'+(e.deviation!=null && e.deviation!=="" ? e.deviation : "―")+'</td>'+
-      '<td style="font-size:11.5px;color:var(--text-muted);">'+escapeHtml(e.avgPopulation||"―")+'</td>'+
       '<td style="font-size:11.5px;color:var(--text-muted);max-width:140px;">'+escapeHtml(e.memo||"")+'</td>'+
       '<td style="white-space:nowrap;">'+
         '<button class="icon-btn" data-examact="edit" data-id="'+e.id+'">編集</button> '+
@@ -1194,7 +1199,7 @@ function renderExamList(){
       '</td>'+
     '</tr>'+
     '<tr class="exam-detail-row" id="examdetail-'+e.id+'" style="display:'+(expandedExamRubric[e.id]?'table-row':'none')+';">'+
-      '<td colspan="12">'+renderRubricPanel(e)+'</td></tr>';
+      '<td colspan="10">'+renderRubricPanel(e)+'</td></tr>';
   }).join("");
 }
 
@@ -1202,17 +1207,13 @@ function startEditExam(id){
   var e = state.exams.find(function(x){return x.id===id;});
   if (!e) return;
   editingExamId = id;
-  document.getElementById("exUniv").value = e.university;
-  document.getElementById("exFaculty").value = e.faculty||"";
   document.getElementById("exYear").value = e.year;
   document.getElementById("exSubject").value = e.subject;
-  document.getElementById("exQNo").value = e.questionNumber;
+  updateQuestionChoices(e.questionNumber);
   document.getElementById("exArea").value = e.areaName;
   document.getElementById("exMyScore").value = e.myScore;
   document.getElementById("exMaxScore").value = e.maxScore;
   document.getElementById("exAvgScore").value = (e.avgScore===null||e.avgScore===undefined) ? "" : e.avgScore;
-  document.getElementById("exPopulation").value = e.avgPopulation||"";
-  document.getElementById("exAvgType").value = e.avgPopulationType||"";
   document.getElementById("exDeviation").value = (e.deviation===null||e.deviation===undefined) ? "" : e.deviation;
   document.getElementById("exDistText").value = (e.scoreDistribution||[]).map(function(it){return it.score+":"+it.percent;}).join("\n");
   document.getElementById("distWarning").classList.remove("show");
@@ -1225,6 +1226,7 @@ function cancelEditExam(){
   editingExamId = null;
   document.getElementById("examForm").reset();
   document.getElementById("exSubject").value = state.activeSubject;
+  updateQuestionChoices();
   document.getElementById("examSubmitBtn").textContent = "この大問を登録";
   document.getElementById("examCancelBtn").style.display = "none";
   document.getElementById("examErrors").classList.remove("show");
@@ -1745,17 +1747,15 @@ document.getElementById("addAreaForm").addEventListener("submit", function(e){
 document.getElementById("examForm").addEventListener("submit", function(e){
   e.preventDefault();
   var data = {
-    university: document.getElementById("exUniv").value.trim(),
-    faculty: document.getElementById("exFaculty").value.trim(),
+    university: "東京大学",
+    faculty: "理科一類",
     year: parseInt(document.getElementById("exYear").value,10),
     subject: document.getElementById("exSubject").value,
-    questionNumber: document.getElementById("exQNo").value.trim(),
+    questionNumber: document.getElementById("exQNo").value,
     areaName: document.getElementById("exArea").value.trim(),
     myScore: parseFloat(document.getElementById("exMyScore").value),
     maxScore: parseFloat(document.getElementById("exMaxScore").value),
     avgScore: document.getElementById("exAvgScore").value==="" ? null : parseFloat(document.getElementById("exAvgScore").value),
-    avgPopulation: document.getElementById("exPopulation").value.trim(),
-    avgPopulationType: document.getElementById("exAvgType").value,
     deviation: document.getElementById("exDeviation").value==="" ? null : parseFloat(document.getElementById("exDeviation").value),
     memo: document.getElementById("exMemo").value.trim()
   };
@@ -1783,6 +1783,7 @@ document.getElementById("examForm").addEventListener("submit", function(e){
     addExam(data);
     document.getElementById("examForm").reset();
     document.getElementById("exSubject").value = state.activeSubject;
+    updateQuestionChoices();
   }
 });
 document.getElementById("examCancelBtn").addEventListener("click", cancelEditExam);
@@ -1861,6 +1862,8 @@ document.getElementById("resetBtn").addEventListener("click", resetAllData);
 /* ============================================================
    18. 初期化
 ============================================================ */
+setupExamChoices();
+document.getElementById("exSubject").addEventListener("change", function(){ updateQuestionChoices(); });
 loadState();
 renderAll();
 
@@ -1946,7 +1949,7 @@ document.getElementById("ocrRunBtn").addEventListener("click", async function(){
 
 document.getElementById("ocrApplyBtn").addEventListener("click", function(){
   var c=ocrLastCandidates;
-  ocrSetField("exUniv",c.university); ocrSetField("exYear",c.year); ocrSetField("exQNo",c.questionNumber);
+  ocrSetField("exYear",c.year); ocrSetField("exQNo",c.questionNumber);
   ocrSetField("exMyScore",c.myScore); ocrSetField("exMaxScore",c.maxScore); ocrSetField("exAvgScore",c.avgScore); ocrSetField("exDeviation",c.deviation);
   document.getElementById("ocrStatus").textContent="候補を入力欄へ反映しました。分野名などを補い、内容を確認して登録してください。";
   document.getElementById("sec-examinput").scrollIntoView({behavior:"smooth"});
